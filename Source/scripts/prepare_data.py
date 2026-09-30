@@ -1,5 +1,10 @@
 #!/usr/bin/env python
-"""CLI tool for PE malware feature extraction, vocabulary generation, and dataset preparation."""
+"""CLI tool for PE malware feature extraction, vocabulary generation, and dataset preparation.
+
+Corresponds to the offline feature extraction pipeline (trichxuat2.py) that produces
+incremental_data_v2/ (archived as Data_RISC.zip on Google Drive).
+Note: Model training (train_incremental.py) directly consumes incremental_data_v2/.
+"""
 
 import argparse
 import json

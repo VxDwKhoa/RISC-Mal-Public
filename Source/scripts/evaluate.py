@@ -6,13 +6,16 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Dict, List
+import numpy as np
 import torch
+from torch.utils.data import DataLoader
 
 # Ensure src is in sys.path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from riscmal.backbones import MultiViewFeatureExtractor
+from riscmal.data.dataset import MalwareMultiViewDataset, multiview_collate_fn
 from riscmal.evaluation.metrics import compute_classification_metrics
 from riscmal.evaluation.tracker import ContinualMetricsTracker
 from riscmal.models import DERClassifier, FOSTERClassifier, MalwareMultiViewClassifier
@@ -28,6 +31,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num-classes", type=int, default=6, help="Total classes seen up to current task")
     parser.add_argument("--device", type=str, default="auto", help="Device (cpu, cuda, auto)")
     parser.add_argument("--output-json", type=str, default=None, help="Optional output JSON path for metrics")
+    parser.add_argument(
+        "--data-dir",
+        type=str,
+        default="incremental_data_v2",
+        help="Path to incremental dataset directory containing task1, task2, task3",
+    )
     return parser.parse_args()
 
 
@@ -44,6 +53,22 @@ def to_serializable(val: Any) -> Any:
     if isinstance(val, (int, float, str, bool)) or val is None:
         return val
     return float(val)
+
+
+def resolve_data_dir(data_dir: str) -> Path:
+    """Finds the dataset directory among common candidate paths."""
+    candidates = [
+        Path(data_dir),
+        Path("incremental_data_v2"),
+        Path("../incremental_data_v2"),
+        Path("../../incremental_data_v2"),
+        Path("data"),
+        Path("../data"),
+    ]
+    for c in candidates:
+        if c.is_dir() and (c / "task1").is_dir():
+            return c
+    return Path(data_dir)
 
 
 def main() -> None:
@@ -77,10 +102,56 @@ def main() -> None:
         model.load_state_dict(saved_state, strict=False)
     logger.info("Model loaded successfully.")
 
-    # Sample mock evaluation for standalone CLI verification
-    mock_y_true = [0, 1, 2, 3, 4, 5]
-    mock_y_pred = [0, 1, 2, 3, 4, 5]
-    metrics = compute_classification_metrics(mock_y_true, mock_y_pred)
+    # Check for real dataset directory
+    resolved_data = resolve_data_dir(args.data_dir)
+    has_real_data = resolved_data.is_dir() and (resolved_data / "task1").is_dir()
+
+    if has_real_data:
+        logger.info("Found real dataset at: %s. Evaluating cumulative test sets...", resolved_data)
+        model.eval()
+        all_preds: List[int] = []
+        all_targets: List[int] = []
+
+        # Determine tasks to evaluate based on num_classes
+        # Task 1: classes [0, 1]
+        # Task 2: classes [2, 3] (if num_classes >= 4)
+        # Task 3: classes [4, 5] (if num_classes >= 6)
+        tasks_to_eval = ["task1"]
+        if args.num_classes >= 4 and (resolved_data / "task2").is_dir():
+            tasks_to_eval.append("task2")
+        if args.num_classes >= 6 and (resolved_data / "task3").is_dir():
+            tasks_to_eval.append("task3")
+
+        with torch.no_grad():
+            for task_id in tasks_to_eval:
+                test_ds = MalwareMultiViewDataset(task_id=task_id, set_name="test", base_path=resolved_data)
+                test_loader = DataLoader(
+                    test_ds,
+                    batch_size=32,
+                    shuffle=False,
+                    collate_fn=multiview_collate_fn,
+                )
+                for batch in test_loader:
+                    batch = batch.to(device)
+                    if method_name == "der":
+                        logits, _ = model(batch.header, batch.imports, batch.img1d, batch.img2d, batch.apis)
+                    else:
+                        feats = model.backbone(batch.header, batch.imports, batch.img1d, batch.img2d, batch.apis)
+                        logits = model.classifier_head(feats)
+                    preds = logits.argmax(dim=-1)
+                    all_preds.extend(preds.cpu().numpy().tolist())
+                    all_targets.extend(batch.label.cpu().numpy().tolist())
+
+        metrics = compute_classification_metrics(all_targets, all_preds)
+    else:
+        logger.warning(
+            "Dataset folder not found at '%s'. Running standalone dry-run verification. "
+            "To evaluate on real data, download incremental_data_v2/ from Google Drive.",
+            resolved_data,
+        )
+        mock_y_true = list(range(args.num_classes))
+        mock_y_pred = list(range(args.num_classes))
+        metrics = compute_classification_metrics(mock_y_true, mock_y_pred)
 
     logger.info("Evaluation Results:")
     logger.info("  Accuracy:           %.4f", metrics["accuracy"])
