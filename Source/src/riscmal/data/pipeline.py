@@ -30,11 +30,11 @@ from riscmal.data.pe_features import (
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_LABELS = ["benign", "locker", "mediyes", "winwebsec", "zbot", "zeroaccess"]
+DEFAULT_LABELS = ["Benign", "Locker", "Mediyes", "Winwebsec", "Zbot", "Zeroaccess"]
 DEFAULT_TASKS = {
-    "task1": ["benign", "locker"],
-    "task2": ["mediyes", "winwebsec"],
-    "task3": ["zbot", "zeroaccess"],
+    "task1": ["Benign", "Locker"],
+    "task2": ["Mediyes", "Winwebsec"],
+    "task3": ["Zbot", "Zeroaccess"],
 }
 
 
@@ -289,6 +289,18 @@ def build_incremental_dataloaders(
 
     tasks_data: List[Dict[str, DataLoader]] = []
     base_path = Path(data_dir)
+    if not base_path.is_dir():
+        for candidate in [
+            Path("incremental_data_v2"),
+            Path("../incremental_data_v2"),
+            Path("../../incremental_data_v2"),
+            Path("data"),
+            Path("../data"),
+            Path("../Data"),
+        ]:
+            if candidate.is_dir():
+                base_path = candidate
+                break
 
     for task_id, class_ids in task_config.items():
         train_ds = MalwareMultiViewDataset(task_id=task_id, set_name="train", base_path=base_path)
